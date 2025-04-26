@@ -1,0 +1,37 @@
+From 247824d51ca35aced9bb850263e688b5b171b7d3 Mon Sep 17 00:00:00 2001
+From: Sahil Siddiq <sahilcdq@proton.me>
+Date: Mon, 3 Mar 2025 10:30:27 +0530
+Subject: [PATCH 1/2] OpenRISC: Set DCP/ICP bits in UPR register
+
+Signed-off-by: Sahil Siddiq <sahilcdq@proton.me>
+---
+ target/openrisc/cpu.c | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/target/openrisc/cpu.c b/target/openrisc/cpu.c
+index e8abf1f8b5..d81d205a6f 100644
+--- a/target/openrisc/cpu.c
++++ b/target/openrisc/cpu.c
+@@ -201,7 +201,8 @@ static void or1200_initfn(Object *obj)
+     OpenRISCCPU *cpu = OPENRISC_CPU(obj);
+ 
+     cpu->env.vr = 0x13000008;
+-    cpu->env.upr = UPR_UP | UPR_DMP | UPR_IMP | UPR_PICP | UPR_TTP | UPR_PMP;
++    cpu->env.upr = UPR_UP | UPR_DMP | UPR_DCP | UPR_ICP | UPR_IMP |
++                   UPR_PICP | UPR_TTP | UPR_PMP;
+     cpu->env.cpucfgr = CPUCFGR_NSGF | CPUCFGR_OB32S | CPUCFGR_OF32S |
+                        CPUCFGR_EVBARP;
+ 
+@@ -220,7 +221,8 @@ static void openrisc_any_initfn(Object *obj)
+     cpu->env.vr2 = 0;           /* No version specific id */
+     cpu->env.avr = 0x01030000;  /* Architecture v1.3 */
+ 
+-    cpu->env.upr = UPR_UP | UPR_DMP | UPR_IMP | UPR_PICP | UPR_TTP | UPR_PMP;
++    cpu->env.upr = UPR_UP | UPR_DMP | UPR_DCP | UPR_ICP | UPR_IMP |
++                   UPR_PICP | UPR_TTP | UPR_PMP;
+     cpu->env.cpucfgr = CPUCFGR_NSGF | CPUCFGR_OB32S | CPUCFGR_OF32S |
+                        CPUCFGR_AVRP | CPUCFGR_EVBARP | CPUCFGR_OF64A32S;
+ 
+-- 
+2.48.1
+
