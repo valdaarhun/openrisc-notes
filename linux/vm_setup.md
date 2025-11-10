@@ -15,6 +15,10 @@ make -j `nproc` ARCH=openrisc CROSS_COMPILE="or1k-buildroot-linux-gnu-"
 
 ### Setting up the filesystems
 
+```sh
+find . -print0 | cpio -H newc -ov --null --owner=root:root | bzip2 > initramfs.cpio.bz2
+```
+
 ### Booting
 
 We'll be using QEMU for booting the kernel.
@@ -24,7 +28,6 @@ We'll be using QEMU for booting the kernel.
 -nographic \
 -cpu or1200 \
 -M or1k-sim \
--nographic \
 -kernel ./openrisc-linux/vmlinux \
 -initrd initramfs.cpio.bz2 2>&1 | tee vm.log
 ```
