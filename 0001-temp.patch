@@ -1,0 +1,952 @@
+From 9d90f9d6902ce526302383144f99e270c83d1326 Mon Sep 17 00:00:00 2001
+From: Sahil Siddiq <sahilcdq0@gmail.com>
+Date: Sun, 29 Mar 2026 21:00:57 +0530
+Subject: [PATCH] temp
+
+---
+ arch/openrisc/Kconfig                   |   1 +
+ arch/openrisc/configs/or1ksim_defconfig |   2 +
+ arch/openrisc/configs/virt_defconfig    |   1 +
+ arch/openrisc/include/asm/break.h       |  17 +
+ arch/openrisc/include/asm/insn-def.h    |  54 +++-
+ arch/openrisc/include/asm/kprobes.h     |  73 +++++
+ arch/openrisc/include/asm/spr_defs.h    |   1 +
+ arch/openrisc/kernel/Makefile           |   3 +-
+ arch/openrisc/kernel/insn.c             |  72 +++++
+ arch/openrisc/kernel/jump_label.c       |   2 +-
+ arch/openrisc/kernel/kprobes.c          | 398 ++++++++++++++++++++++++
+ arch/openrisc/kernel/traps.c            |  71 ++---
+ arch/openrisc/mm/fault.c                |   4 +
+ kernel/kprobes.c                        |   7 +-
+ samples/kprobes/kprobe_example.c        |   8 +
+ 15 files changed, 668 insertions(+), 46 deletions(-)
+ create mode 100644 arch/openrisc/include/asm/break.h
+ create mode 100644 arch/openrisc/include/asm/kprobes.h
+ create mode 100644 arch/openrisc/kernel/insn.c
+ create mode 100644 arch/openrisc/kernel/kprobes.c
+
+diff --git a/arch/openrisc/Kconfig b/arch/openrisc/Kconfig
+index 9156635dd264..d240533b424b 100644
+--- a/arch/openrisc/Kconfig
++++ b/arch/openrisc/Kconfig
+@@ -27,6 +27,7 @@ config OPENRISC
+ 	select HAVE_ARCH_JUMP_LABEL
+ 	select HAVE_ARCH_JUMP_LABEL_RELATIVE
+ 	select HAVE_PCI
++	select HAVE_KPROBES
+ 	select HAVE_UID16
+ 	select HAVE_PAGE_SIZE_8KB
+ 	select HAVE_REGS_AND_STACK_ACCESS_API
+diff --git a/arch/openrisc/configs/or1ksim_defconfig b/arch/openrisc/configs/or1ksim_defconfig
+index 769705ac24d5..24d2915e7609 100644
+--- a/arch/openrisc/configs/or1ksim_defconfig
++++ b/arch/openrisc/configs/or1ksim_defconfig
+@@ -10,7 +10,9 @@ CONFIG_EXPERT=y
+ # CONFIG_KALLSYMS is not set
+ CONFIG_BUILTIN_DTB_NAME="or1ksim"
+ CONFIG_HZ_100=y
++CONFIG_OPENRISC=y
+ CONFIG_JUMP_LABEL=y
++CONFIG_KPROBES=y
+ CONFIG_MODULES=y
+ # CONFIG_BLOCK is not set
+ CONFIG_SLUB_TINY=y
+diff --git a/arch/openrisc/configs/virt_defconfig b/arch/openrisc/configs/virt_defconfig
+index 0b9979b35ca8..56b193c0fa16 100644
+--- a/arch/openrisc/configs/virt_defconfig
++++ b/arch/openrisc/configs/virt_defconfig
+@@ -11,6 +11,7 @@ CONFIG_OPENRISC_HAVE_INST_SEXT=y
+ CONFIG_NR_CPUS=8
+ CONFIG_SMP=y
+ CONFIG_HZ_100=y
++CONFIG_OPENRISC=y
+ # CONFIG_OPENRISC_NO_SPR_SR_DSX is not set
+ CONFIG_JUMP_LABEL=y
+ # CONFIG_COMPAT_BRK is not set
+diff --git a/arch/openrisc/include/asm/break.h b/arch/openrisc/include/asm/break.h
+new file mode 100644
+index 000000000000..2800a71adf17
+--- /dev/null
++++ b/arch/openrisc/include/asm/break.h
+@@ -0,0 +1,17 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++/*
++ * OpenRISC trap codes used internally by the kernel
++ *
++ * Linux architectural port borrowing liberally from MIPS and
++ * LoongArch. All original copyrights apply as per the original
++ * source declaration.
++ *
++ * Copyright (C) 2026 Sahil Siddiq <sahilcdq0@gmail.com>
++ */
++#ifndef __ASM_BREAK_H
++#define __ASM_BREAK_H
++
++#define BRK_KPROBE_BP	512	/* Kprobe break */
++#define BRK_KPROBE_SSTEPBP 1024	/* Kprobe single-step software implementation */
++
++#endif /* __ASM_BREAK_H */
+diff --git a/arch/openrisc/include/asm/insn-def.h b/arch/openrisc/include/asm/insn-def.h
+index 1e0c028a5b95..79a92206d524 100644
+--- a/arch/openrisc/include/asm/insn-def.h
++++ b/arch/openrisc/include/asm/insn-def.h
+@@ -6,10 +6,56 @@
+ #ifndef __ASM_OPENRISC_INSN_DEF_H
+ #define __ASM_OPENRISC_INSN_DEF_H
+ 
+-/* or1k instructions are always 32 bits. */
+-#define	OPENRISC_INSN_SIZE		4
+-
+ /* or1k nop instruction code */
+-#define OPENRISC_INSN_NOP     0x15000000U
++#define INSN_NOP	0x15000000U
++
++#define INSN_CSYNC	0x23000000U
++#define INSN_MSYNC	0x22000000U
++#define INSN_PSYNC	0x22800000U
++
++#define OPCODE_TRAP	0x21000000U
++#define OPCODE_SYS	0x20000000U
++
++struct pt_regs;
++
++enum kprobes_blacklist {
++    l_macrc = 0x06,
++    l_rfe = 0x09,
++    l_lwa = 0x1b,
++    l_mfspr = 0x2d,
++    l_mtspr = 0x30,
++    l_swa = 0x33,
++};
++
++enum kprobes_emulated {
++    l_j = 0x00,
++    l_jal = 0x01,
++    l_adrp = 0x02,
++    l_bnf = 0x03,
++    l_bf = 0x04,
++    l_jr = 0x11,
++    l_jalr = 0x12,
++};
++
++struct opcodes_6bit {
++    unsigned int opcode: 6;
++    unsigned int operands: 26;
++};
++
++union openrisc_instruction { 
++    unsigned int word;
++    struct opcodes_6bit opcodes_6bit;
++};
++
++#define OPENRISC_INSN_SIZE  (sizeof(union openrisc_instruction))
++
++/* Helpers for working with l.trap */
++static inline unsigned long __emit_trap(unsigned int code)
++{
++    return (code & 0xffff) | OPCODE_TRAP;
++}
++
++void simulate_pc(struct pt_regs *regs, unsigned int jmp);
++void simulate_branch(struct pt_regs *regs, unsigned int jmp);
+ 
+ #endif /* __ASM_OPENRISC_INSN_DEF_H */
+diff --git a/arch/openrisc/include/asm/kprobes.h b/arch/openrisc/include/asm/kprobes.h
+new file mode 100644
+index 000000000000..928fcdcc9b4b
+--- /dev/null
++++ b/arch/openrisc/include/asm/kprobes.h
+@@ -0,0 +1,73 @@
++#ifndef __ASM_OPENRISC_KPROBES_H
++#define __ASM_OPENRISC_KPROBES_H
++
++#include <asm-generic/kprobes.h>
++
++#ifdef CONFIG_KPROBES
++#include <asm/break.h>
++#include <asm/cacheflush.h>
++
++#define	 __ARCH_WANT_KPROBES_INSN_SLOT
++
++struct pt_regs;
++struct kprobe;
++
++typedef u32 kprobe_opcode_t;
++
++/*
++ * MAX_INSN_SIZE is used as the number of slots in an executable
++ * page for single-stepping out of line (SSOL). We need two slots
++ * since we single-step using software breakpoints. The probed
++ * instruction is placed in the first slot with a breakpoint
++ * instruction in the second slot.
++ */
++#define MAX_INSN_SIZE 2
++
++#define kretprobe_blacklist_size 0
++
++/* Architecture specific copy of original instruction */
++struct arch_specific_insn {
++	/* copy of original instruction */
++	kprobe_opcode_t *insn;
++	/* address of next instruction in case of SSOL */
++	unsigned long restore;
++};
++
++struct prev_kprobe {
++	struct kprobe *kp;
++	unsigned int status;
++};
++
++/* per-cpu kprobe control block */
++struct kprobe_ctlblk {
++    unsigned int kprobe_status;
++	unsigned long irq_flags;
++	struct prev_kprobe prev_kprobe;
++};
++
++#define flush_insn_slot(p)			\
++do {									\
++	if (p->addr)							\
++		local_icache_range_inv((unsigned long)p->addr,		\
++		               (unsigned long)p->addr +			\
++		               sizeof(kprobe_opcode_t));	\
++} while (0)
++
++#define kretprobe_blacklist_size 0
++
++void arch_remove_kprobe(struct kprobe *p);
++int kprobe_fault_handler(struct pt_regs *regs, int trapnr);
++bool kprobe_breakpoint_handler(struct pt_regs *regs);
++bool kprobe_singlestep_handler(struct pt_regs *regs);
++#else /* !CONFIG_KPROBES */
++static inline bool kprobe_breakpoint_handler(struct pt_regs *regs)
++{
++    return false;
++}
++
++static inline bool kprobe_singlestep_handler(struct pt_regs *regs)
++{
++    return false;
++}
++#endif /* CONFIG_KPROBES */
++#endif /* __ASM_OPENRISC_KPROBES_H */
+diff --git a/arch/openrisc/include/asm/spr_defs.h b/arch/openrisc/include/asm/spr_defs.h
+index f0b6b492e9f4..5d13a9b96263 100644
+--- a/arch/openrisc/include/asm/spr_defs.h
++++ b/arch/openrisc/include/asm/spr_defs.h
+@@ -179,6 +179,7 @@
+ #define SPR_CPUCFGR_OF32S  0x00000080  /* ORFPX32 supported */
+ #define SPR_CPUCFGR_OF64S  0x00000100  /* ORFPX64 supported */
+ #define SPR_CPUCFGR_OV64S  0x00000200  /* ORVDX64 supported */
++#define SPR_CPUCFGR_ND     0x00000400  /* No delay slot */
+ #define SPR_CPUCFGR_RES	   0xfffffc00  /* Reserved */
+ 
+ /*
+diff --git a/arch/openrisc/kernel/Makefile b/arch/openrisc/kernel/Makefile
+index 19e0eb94f2eb..2ac824867963 100644
+--- a/arch/openrisc/kernel/Makefile
++++ b/arch/openrisc/kernel/Makefile
+@@ -5,7 +5,7 @@
+ 
+ always-$(KBUILD_BUILTIN)	:= vmlinux.lds
+ 
+-obj-y	:= head.o setup.o or32_ksyms.o process.o dma.o \
++obj-y	:= head.o insn.o setup.o or32_ksyms.o process.o dma.o \
+ 	   traps.o time.o irq.o entry.o ptrace.o signal.o \
+ 	   sys_call_table.o unwinder.o cacheinfo.o
+ 
+@@ -14,6 +14,7 @@ obj-$(CONFIG_SMP)		+= smp.o sync-timer.o
+ obj-$(CONFIG_STACKTRACE)	+= stacktrace.o
+ obj-$(CONFIG_MODULES)		+= module.o
+ obj-$(CONFIG_OF)		+= prom.o
++obj-$(CONFIG_KPROBES)		+= kprobes.o
+ obj-y	+= patching.o
+ 
+ clean:
+diff --git a/arch/openrisc/kernel/insn.c b/arch/openrisc/kernel/insn.c
+new file mode 100644
+index 000000000000..3d1d56276b4d
+--- /dev/null
++++ b/arch/openrisc/kernel/insn.c
+@@ -0,0 +1,72 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++/*
++ * OpenRISC instruction utils
++ *
++ * Linux architectural port borrowing liberally from similar works of
++ * others.  All original copyrights apply as per the original source
++ * declaration.
++ *
++ * Copyright (C) 2026 Sahil Siddiq <sahilcdq0@gmail.com>
++ */
++
++#include <linux/ptrace.h>
++#include <asm/insn-def.h>
++
++void simulate_pc(struct pt_regs *regs, unsigned int jmp)
++{
++	int displacement;
++	unsigned int rd, op;
++
++	displacement = sign_extend32(((jmp) & 0x7ffff) << 13, 31);
++	rd = (jmp & 0x3ffffff) >> 21;
++	op = jmp >> 26;
++
++	switch(op) {
++	case l_adrp:
++		regs->gpr[rd] = displacement + (regs->pc & (-8192));
++		return;
++	default:
++		break;
++	}
++}
++
++void simulate_branch(struct pt_regs *regs, unsigned int jmp)
++{
++	int displacement;
++	unsigned int rb, op;
++
++	displacement = sign_extend32(((jmp) & 0x3ffffff) << 2, 27);
++	rb = (jmp & 0x0000ffff) >> 11;
++	op = jmp >> 26;
++
++	switch (op) {
++	case l_j: /* l.j */
++		regs->pc += displacement;
++		return;
++	case l_jal: /* l.jal */
++		regs->pc += displacement;
++		regs->gpr[9] = regs->pc + 8;
++		return;
++	case l_bnf: /* l.bnf */
++		if (regs->sr & SPR_SR_F)
++			regs->pc += 8;
++		else
++			regs->pc += displacement;
++		return;
++	case l_bf: /* l.bf */
++		if (regs->sr & SPR_SR_F)
++			regs->pc += displacement;
++		else
++			regs->pc += 8;
++		return;
++	case l_jr: /* l.jr */
++		regs->pc = regs->gpr[rb];
++		return;
++	case l_jalr: /* l.jalr */
++		regs->pc = regs->gpr[rb];
++		regs->gpr[9] = regs->pc + 8;
++		return;
++	default:
++		break;
++	}
++}
+diff --git a/arch/openrisc/kernel/jump_label.c b/arch/openrisc/kernel/jump_label.c
+index ab7137c23b46..fe082eb847a4 100644
+--- a/arch/openrisc/kernel/jump_label.c
++++ b/arch/openrisc/kernel/jump_label.c
+@@ -34,7 +34,7 @@ bool arch_jump_label_transform_queue(struct jump_entry *entry,
+ 
+ 		insn = offset;
+ 	} else {
+-		insn = OPENRISC_INSN_NOP;
++		insn = INSN_NOP;
+ 	}
+ 
+ 	if (early_boot_irqs_disabled)
+diff --git a/arch/openrisc/kernel/kprobes.c b/arch/openrisc/kernel/kprobes.c
+new file mode 100644
+index 000000000000..e9551e368683
+--- /dev/null
++++ b/arch/openrisc/kernel/kprobes.c
+@@ -0,0 +1,398 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++/*
++ * Kernel probes (KProbes) for OpenRISC
++ *
++ * Linux architectural port borrowing liberally from similar works of
++ * others.  All original copyrights apply as per the original source
++ * declaration.
++ *
++ * Copyright (C) 2025 Sahil Siddiq <sahilcdq0@gmail.com>
++ */
++
++#include <linux/kprobes.h>
++#include <asm/insn-def.h>
++#include <asm/spr.h>
++#include <asm/spr_defs.h>
++#include <asm/text-patching.h>
++
++DEFINE_PER_CPU(struct kprobe *, current_kprobe);
++DEFINE_PER_CPU(struct kprobe_ctlblk, kprobe_ctlblk);
++
++#define KPROBE_BP_INSN		__emit_trap(BRK_KPROBE_BP)
++#define KPROBE_SSTEPBP_INSN	__emit_trap(BRK_KPROBE_SSTEPBP)
++
++static bool insn_not_supported(union openrisc_instruction insn)
++{
++	switch (insn.word) {
++	case INSN_CSYNC:
++	case INSN_MSYNC:
++	case INSN_PSYNC:
++		return true;
++	}
++
++	if ((insn.word & 0xffff0000) == OPCODE_SYS)
++		return true;
++
++	switch (insn.opcodes_6bit.opcode) {
++	case l_macrc:
++	case l_rfe:
++	case l_lwa:
++	case l_mfspr:
++	case l_mtspr:
++	case l_swa:
++		return true;
++	}
++
++	return false;
++}
++NOKPROBE_SYMBOL(insn_not_supported)
++
++static bool is_branch_insn(union openrisc_instruction insn)
++{
++	switch (insn.opcodes_6bit.opcode) {
++	case l_j:
++	case l_jal:
++	case l_bnf:
++	case l_bf:
++	case l_jr:
++	case l_jalr:
++		return true;
++	}
++
++	return false;
++}
++NOKPROBE_SYMBOL(is_branch_insn)
++
++static bool is_pc_insn(union openrisc_instruction insn)
++{
++	if (insn.opcodes_6bit.opcode == l_adrp)
++		return true;
++
++	return false;
++}
++NOKPROBE_SYMBOL(is_pc_insn)
++
++static bool insns_need_simulation(union openrisc_instruction insn, bool *exec_delay_slot)
++{
++	unsigned int cpucfgr = mfspr(SPR_CPUCFGR);
++
++	if (is_branch_insn(insn)) {
++		*exec_delay_slot = !(cpucfgr & SPR_CPUCFGR_ND);
++		return true;
++	}
++
++	if (is_pc_insn(insn)) {
++		*exec_delay_slot = false;
++		return true;
++	}
++
++	*exec_delay_slot = false;
++	return false;
++}
++NOKPROBE_SYMBOL(insns_need_simulation)
++
++int arch_prepare_kprobe(struct kprobe *p)
++{
++	printk(KERN_INFO "Hello in arch_prepare_kprobe\n");
++	union openrisc_instruction insn;
++	union openrisc_instruction prev_insn;
++	unsigned int cpucfgr = mfspr(SPR_CPUCFGR);
++	bool ss_delay_slot = false, exec_delay_slot = false;
++
++	/* Attempt to probe at unaligned address */
++	if ((unsigned long)p->addr & 0x3)
++		return -EILSEQ;
++
++	p->opcode = *p->addr;
++	insn.word = p->opcode;
++
++	if (insn_not_supported(insn)) {
++		pr_notice("Can't insert KProbe at blacklisted instruction.\n");
++		return -EINVAL;
++	}
++
++	prev_insn.word = *(p->addr - 1);
++	if (insns_need_simulation(prev_insn, &exec_delay_slot) && exec_delay_slot) {
++		pr_notice("Can't insert KProbe in delay slot.\n");
++		return -EINVAL;
++	}
++
++	/* TODO: Handle symbols as done in riscv? */
++
++	printk(KERN_INFO "addr = 0x%x\n", p->addr);
++	printk(KERN_INFO "insn at addr = 0x%x\n", *(p->addr));
++	printk(KERN_INFO "insn = 0x%x\n", p->opcode);
++	if (insns_need_simulation(insn, &exec_delay_slot) && !exec_delay_slot) {
++		p->ainsn.insn = NULL;
++		p->ainsn.restore = 0;
++	} else {
++		/*
++		 * Single step probed instruction or, in case of branch instructions, single
++		 * step instruction in delay slot.
++		 */
++		p->ainsn.insn = get_insn_slot();
++		if (!p->ainsn.insn)
++			return -ENOMEM;
++
++		if (exec_delay_slot) {
++			patch_insn_write(p->ainsn.insn, *(p->addr + 1));
++			p->ainsn.restore = 0;
++		} else {
++			patch_insn_write(p->ainsn.insn, p->opcode);
++			p->ainsn.restore = (unsigned long)p->addr + OPENRISC_INSN_SIZE;
++		}
++		patch_insn_write(&p->ainsn.insn[1], KPROBE_SSTEPBP_INSN);
++		printk(KERN_INFO "addr of slot 1 = 0x%x\n", p->ainsn.insn);
++		printk(KERN_INFO "insn in slot 1 = 0x%x\n", *p->ainsn.insn);
++		printk(KERN_INFO "addr of slot 2 = 0x%x\n", &p->ainsn.insn[1]);
++		printk(KERN_INFO "insn in slot 2 = 0x%x\n", p->ainsn.insn[1]);
++	}
++
++	return 0;
++}
++NOKPROBE_SYMBOL(arch_prepare_kprobe);
++
++void arch_arm_kprobe(struct kprobe *p)
++{
++	patch_insn_write(p->addr, KPROBE_BP_INSN);
++	flush_insn_slot(p);
++}
++NOKPROBE_SYMBOL(arch_arm_kprobe);
++
++void arch_disarm_kprobe(struct kprobe *p)
++{
++	patch_insn_write(p->addr, p->opcode);
++	flush_insn_slot(p);
++}
++NOKPROBE_SYMBOL(arch_disarm_kprobe);
++
++void arch_remove_kprobe(struct kprobe *p)
++{
++	if (p->ainsn.insn) {
++		free_insn_slot(p->ainsn.insn, 0);
++		p->ainsn.insn = NULL;
++	}
++}
++NOKPROBE_SYMBOL(arch_remove_kprobe);
++
++static void set_current_kprobe(struct kprobe *p)
++{
++	__this_cpu_write(current_kprobe, p);
++}
++NOKPROBE_SYMBOL(set_current_kprobe);
++
++static void save_previous_kprobe(struct kprobe_ctlblk *kcb)
++{
++	kcb->prev_kprobe.kp = kprobe_running();
++	kcb->prev_kprobe.status = kcb->kprobe_status;
++}
++NOKPROBE_SYMBOL(save_previous_kprobe);
++
++static void restore_previous_kprobe(struct kprobe_ctlblk *kcb)
++{
++	kcb->kprobe_status = kcb->prev_kprobe.status;
++	set_current_kprobe(kcb->prev_kprobe.kp);
++}
++NOKPROBE_SYMBOL(restore_previous_kprobe);
++
++static void post_kprobe_handler(struct kprobe *cur, struct kprobe_ctlblk *kcb,
++				struct pt_regs *regs)
++{
++	if (cur->ainsn.restore != 0)
++		instruction_pointer_set(regs, (unsigned long)cur->ainsn.restore);
++
++	if (kcb->kprobe_status == KPROBE_REENTER) {
++		restore_previous_kprobe(kcb);
++		preempt_enable_no_resched();
++		return;
++	}
++
++	kcb->kprobe_status = KPROBE_HIT_SSDONE;
++
++	if (cur->post_handler)
++		cur->post_handler(cur, regs, 0);
++
++	reset_current_kprobe();
++	preempt_enable_no_resched();
++}
++NOKPROBE_SYMBOL(post_kprobe_handler);
++
++static void setup_singlestep(struct kprobe *p, struct pt_regs *regs,
++			     struct kprobe_ctlblk *kcb, int reenter)
++{
++	union openrisc_instruction insn;
++
++	if (reenter) {
++		save_previous_kprobe(kcb);
++		set_current_kprobe(p);
++		kcb->kprobe_status = KPROBE_REENTER;
++	} else {
++		printk(KERN_INFO "setting status to hit_ss\n");
++		kcb->kprobe_status = KPROBE_HIT_SS;
++	}
++
++	/* Emulate instruction if required. */
++	insn.word = p->opcode;
++	if (is_branch_insn(insn)) {
++		simulate_branch(regs, insn.word);
++		/* Save target addr before updating PC to SSOL slot */
++		p->ainsn.restore = regs->pc;
++		printk(KERN_INFO "branch target address = 0x%x\n", p->ainsn.restore);
++	} else if (is_pc_insn(insn)) {
++		simulate_pc(regs, insn.word);
++		/* No SSOL is required here, so call post-process immediately. */
++		post_kprobe_handler(p, kcb, regs);
++		return;
++	} 
++
++	if (p->ainsn.insn) {
++		/* Disable IRQs before single stepping */
++		local_irq_save(kcb->irq_flags);
++		instruction_pointer_set(regs, (unsigned long)p->ainsn.insn);
++	} else {
++		/*
++		 * The instruction is a branch but delay slots are disabled.
++		 * Simply call the post-handler.
++		 */
++		post_kprobe_handler(p, kcb, regs);
++	}
++}
++NOKPROBE_SYMBOL(setup_singlestep);
++
++static bool reenter_kprobe(struct kprobe *p, struct pt_regs *regs,
++			   struct kprobe_ctlblk *kcb)
++{
++	switch (kcb->kprobe_status) {
++	case KPROBE_HIT_SS:
++	case KPROBE_HIT_SSDONE:
++	case KPROBE_HIT_ACTIVE:
++		kprobes_inc_nmissed_count(p);
++		setup_singlestep(p, regs, kcb, 1);
++		break;
++	case KPROBE_REENTER:
++		pr_warn("Failed to recover from reentered kprobes.\n");
++		dump_kprobe(p);
++		WARN_ON_ONCE(1);
++		break;
++	default:
++		WARN_ON(1);
++		return false;
++	}
++
++	return true;
++}
++NOKPROBE_SYMBOL(reenter_kprobe);
++
++bool kprobe_breakpoint_handler(struct pt_regs *regs)
++{
++	struct kprobe *p, *curr_kprobe;
++	struct kprobe_ctlblk *kcb;
++	kprobe_opcode_t *addr = (kprobe_opcode_t *)regs->pc;
++
++	/*
++	 * We don't want to be preempted for the entire
++	 * duration of kprobe processing.
++	 */
++	preempt_disable();
++
++	kcb = get_kprobe_ctlblk();
++	curr_kprobe = kprobe_running();
++	p = get_kprobe(addr);
++	printk(KERN_INFO "p %x\n", p);
++	if (p) {
++		if (curr_kprobe) {
++			printk(KERN_INFO "cur_kprobe exists\n");
++			if (reenter_kprobe(p, regs, kcb))
++				return true;
++		} else {
++			/* Probe hit */
++			set_current_kprobe(p);
++			printk(KERN_INFO "curr_kprobe %x\n", kprobe_running());
++			kcb->kprobe_status = KPROBE_HIT_ACTIVE;
++			/*
++			 * If there's no pre-handler or it returns 0, continue
++			 * processing the KProbe as usual. A non-zero return
++			 * value implies the saved registers have been modified
++			 * and the execution path might deviate from what's
++			 * expected. Reset the KProbe and return.
++			 */
++			if (!p->pre_handler || !p->pre_handler(p, regs)) {
++				// printk(KERN_INFO "single stepping init\n");
++				setup_singlestep(p, regs, kcb, 0);
++				// printk(KERN_INFO "bye bye kp brk handler\n");
++			} else {
++				reset_current_kprobe();
++				preempt_enable_no_resched();
++			}
++			return true;
++		}
++	}
++
++	/*
++	 * The breakpoint instruction was removed right after we hit it
++	 * possibly by another cpu. If the original instruction was also
++	 * a trap instruction then return to the trap handler for further
++	 * processing, else no further processing is required.
++	 */
++	if ((*addr & 0xffff0000) != OPCODE_TRAP) {
++		preempt_enable_no_resched();
++		return true;
++	}
++
++	preempt_enable_no_resched();
++	return false;
++}
++NOKPROBE_SYMBOL(kprobe_breakpoint_handler);
++
++bool kprobe_singlestep_handler(struct pt_regs *regs)
++{
++	struct kprobe *cur = kprobe_running();
++	struct kprobe_ctlblk *kcb = get_kprobe_ctlblk();
++	unsigned long addr = instruction_pointer(regs);
++
++	if (cur && (kcb->kprobe_status & (KPROBE_HIT_SS | KPROBE_REENTER)) &&
++	    ((unsigned long)&cur->ainsn.insn[1] == addr)) {
++		/* Single stepping has been completed. Enable IRQs. */
++		local_irq_restore(kcb->irq_flags);
++		post_kprobe_handler(cur, kcb, regs);
++		return true;
++	}
++
++	preempt_enable_no_resched();
++	return false;
++}
++NOKPROBE_SYMBOL(kprobe_singlestep_handler);
++
++int kprobe_fault_handler(struct pt_regs *regs, int trapnr)
++{
++	struct kprobe *cur = kprobe_running();
++	struct kprobe_ctlblk *kcb = get_kprobe_ctlblk();
++
++	switch (kcb->kprobe_status) {
++	case KPROBE_HIT_SS:
++	case KPROBE_REENTER:
++		/*
++		 * The instruction being single-stepped caused a page fault.
++		 * Reset the current KProbe and set PC to the probe's address.
++		 * Then allow the page fault handler to continue as usual.
++		 */
++		instruction_pointer_set(regs, (unsigned long)cur->addr);
++
++		if (kcb->kprobe_status == KPROBE_REENTER) {
++			restore_previous_kprobe(kcb);
++		} else {
++			local_irq_restore(kcb->irq_flags);
++			reset_current_kprobe();
++			preempt_enable_no_resched();
++		}
++		break;
++	}
++
++	return 0;
++}
++NOKPROBE_SYMBOL(kprobe_fault_handler);
++
++int __init arch_init_kprobes(void)
++{
++	return 0;
++}
+diff --git a/arch/openrisc/kernel/traps.c b/arch/openrisc/kernel/traps.c
+index c195be9cc9fc..b9dd64c3a3f1 100644
+--- a/arch/openrisc/kernel/traps.c
++++ b/arch/openrisc/kernel/traps.c
+@@ -30,9 +30,12 @@
+ #include <linux/kallsyms.h>
+ #include <linux/uaccess.h>
+ 
++#include <asm/break.h>
+ #include <asm/bug.h>
+ #include <asm/fpu.h>
++#include <asm/insn-def.h>
+ #include <asm/io.h>
++#include <asm/kprobes.h>
+ #include <asm/processor.h>
+ #include <asm/unwinder.h>
+ #include <asm/sections.h>
+@@ -212,9 +215,37 @@ asmlinkage void do_fpe_trap(struct pt_regs *regs, unsigned long address)
+ 
+ asmlinkage void do_trap(struct pt_regs *regs, unsigned long address)
+ {
++	printk(KERN_INFO "Reached do_trap()");
++	printk(KERN_INFO "pc = %x\n", regs->pc);
+ 	if (user_mode(regs)) {
+ 		force_sig_fault(SIGTRAP, TRAP_BRKPT, (void __user *)regs->pc);
+ 	} else {
++		unsigned int trap, bcode, cpucfgr = mfspr(SPR_CPUCFGR);
++		printk(KERN_INFO "insn = %x\n", *(unsigned int *)regs->pc);
++		printk(KERN_INFO "ND bit is %d", cpucfgr & SPR_CPUCFGR_ND);
++		trap = *(unsigned int *)regs->pc;
++		if ((trap & 0xffff0000) != OPCODE_TRAP) {
++			/*
++			 * Trap instruction was probably removed and no further processing
++			 * is required.
++			 */
++			 return;
++		}
++
++		bcode = (trap & 0xffff);
++		switch (bcode) {
++		case BRK_KPROBE_BP:
++			if (kprobe_breakpoint_handler(regs))
++				return;
++			break;
++		case BRK_KPROBE_SSTEPBP:
++			if (kprobe_singlestep_handler(regs))
++				return;
++			break;
++		default:
++			break;
++		}
++
+ 		pr_emerg("KERNEL: Illegal trap exception 0x%.8lx\n", regs->pc);
+ 		die("Die:", regs, SIGILL);
+ 	}
+@@ -269,47 +300,9 @@ static inline int in_delay_slot(struct pt_regs *regs)
+ 
+ static inline void adjust_pc(struct pt_regs *regs, unsigned long address)
+ {
+-	int displacement;
+-	unsigned int rb, op, jmp;
+-
+ 	if (unlikely(in_delay_slot(regs))) {
+ 		/* In delay slot, instruction at pc is a branch, simulate it */
+-		jmp = *((unsigned int *)regs->pc);
+-
+-		displacement = sign_extend32(((jmp) & 0x3ffffff) << 2, 27);
+-		rb = (jmp & 0x0000ffff) >> 11;
+-		op = jmp >> 26;
+-
+-		switch (op) {
+-		case 0x00: /* l.j */
+-			regs->pc += displacement;
+-			return;
+-		case 0x01: /* l.jal */
+-			regs->pc += displacement;
+-			regs->gpr[9] = regs->pc + 8;
+-			return;
+-		case 0x03: /* l.bnf */
+-			if (regs->sr & SPR_SR_F)
+-				regs->pc += 8;
+-			else
+-				regs->pc += displacement;
+-			return;
+-		case 0x04: /* l.bf */
+-			if (regs->sr & SPR_SR_F)
+-				regs->pc += displacement;
+-			else
+-				regs->pc += 8;
+-			return;
+-		case 0x11: /* l.jr */
+-			regs->pc = regs->gpr[rb];
+-			return;
+-		case 0x12: /* l.jalr */
+-			regs->pc = regs->gpr[rb];
+-			regs->gpr[9] = regs->pc + 8;
+-			return;
+-		default:
+-			break;
+-		}
++		simulate_branch(regs, *((unsigned int *)regs->pc));
+ 	} else {
+ 		regs->pc += 4;
+ 	}
+diff --git a/arch/openrisc/mm/fault.c b/arch/openrisc/mm/fault.c
+index 29e232d78d82..89b1bdac76ab 100644
+--- a/arch/openrisc/mm/fault.c
++++ b/arch/openrisc/mm/fault.c
+@@ -14,6 +14,7 @@
+ #include <linux/mm.h>
+ #include <linux/interrupt.h>
+ #include <linux/extable.h>
++#include <linux/kprobes.h>
+ #include <linux/sched/signal.h>
+ #include <linux/perf_event.h>
+ 
+@@ -55,6 +56,9 @@ asmlinkage void do_page_fault(struct pt_regs *regs, unsigned long address,
+ 
+ 	tsk = current;
+ 
++	if (kprobe_page_fault(regs, vector))
++		return;
++
+ 	/*
+ 	 * We fault-in kernel-space virtual memory on-demand. The
+ 	 * 'reference' page table is init_mm.pgd.
+diff --git a/kernel/kprobes.c b/kernel/kprobes.c
+index ab8f9fc1f0d1..9a1498b8ed5a 100644
+--- a/kernel/kprobes.c
++++ b/kernel/kprobes.c
+@@ -158,11 +158,14 @@ kprobe_opcode_t *__get_insn_slot(struct kprobe_insn_cache *c)
+ 					if (kip->slot_used[i] == SLOT_CLEAN) {
+ 						kip->slot_used[i] = SLOT_USED;
+ 						kip->nused++;
++						printk(KERN_INFO "Allocated slot at 0x%x\n", kip->insns + (i * c->insn_size));
++						printk(KERN_INFO "nused is %d\n", kip->nused);
+ 						return kip->insns + (i * c->insn_size);
+ 					}
+ 				}
+ 				/* kip->nused is broken. Fix it. */
+ 				kip->nused = slots_per_page(c);
++				printk(KERN_INFO "nused is %d\n", kip->nused);
+ 				WARN_ON(1);
+ 			}
+ 		}
+@@ -185,6 +188,8 @@ kprobe_opcode_t *__get_insn_slot(struct kprobe_insn_cache *c)
+ 	kip->nused = 1;
+ 	kip->ngarbage = 0;
+ 	kip->cache = c;
++	printk(KERN_INFO "Allocated slot at 0x%x\n", kip->insns);
++	printk(KERN_INFO "nused is %d\n", kip->nused);
+ 	list_add_rcu(&kip->list, &c->pages);
+ 
+ 	/* Record the perf ksymbol register event after adding the page */
+@@ -1149,7 +1154,7 @@ static int prepare_kprobe(struct kprobe *p)
+ 	/* Must ensure p->addr is really on ftrace */
+ 	if (kprobe_ftrace(p))
+ 		return arch_prepare_kprobe_ftrace(p);
+-
++	printk("Hello in prepare_kprobe\n");
+ 	return arch_prepare_kprobe(p);
+ }
+ 
+diff --git a/samples/kprobes/kprobe_example.c b/samples/kprobes/kprobe_example.c
+index 53ec6c8b8c40..84e26ebef70b 100644
+--- a/samples/kprobes/kprobe_example.c
++++ b/samples/kprobes/kprobe_example.c
+@@ -59,6 +59,10 @@ static int __kprobes handler_pre(struct kprobe *p, struct pt_regs *regs)
+ 	pr_info("<%s> p->addr = 0x%p, era = 0x%lx, estat = 0x%lx\n",
+ 		p->symbol_name, p->addr, regs->csr_era, regs->csr_estat);
+ #endif
++#ifdef CONFIG_OPENRISC
++	pr_info("<%s> p->addr = 0x%p, pc = 0x%lx, status = 0x%lx\n",
++		p->symbol_name, p->addr, regs->pc, regs->sr);
++#endif
+ 
+ 	/* A dump_stack() here will give a stack backtrace */
+ 	return 0;
+@@ -100,6 +104,10 @@ static void __kprobes handler_post(struct kprobe *p, struct pt_regs *regs,
+ 	pr_info("<%s> p->addr = 0x%p, estat = 0x%lx\n",
+ 		p->symbol_name, p->addr, regs->csr_estat);
+ #endif
++#ifdef CONFIG_OPENRISC
++	pr_info("<%s> p->addr = 0x%p, status = 0x%lx\n",
++		p->symbol_name, p->addr, regs->sr);
++#endif
+ }
+ 
+ static int __init kprobe_init(void)
+-- 
+2.53.0
+
