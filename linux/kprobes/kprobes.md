@@ -26,4 +26,27 @@ Assumptions/Questions:
 
 # Placing a breakpoint
 
-`do_trap()` is responsible for placing a breakpoint at a particular address. It first checks if the processor is in supervisor mode. If it is *not*, then it sends a SIGTRAP signal with 
+...
+
+Executing the trap instruction causes a trap exception to be raised. The trap exception handler starts executing which calls `do_trap()`. The trap instruction can be executed in user space or kernel space. If executed in user space, it raises a SIGTRAP that needs to be handled by the concerned application.
+
+Currently, if a trap is caught in kernel space, the kernel simply crashes. We'll change this behaviour so the kernel can call the kprobe handler to handle the trap.
+
+# Setting up the env
+
+## Kernel
+
+Before building the kernel, make sure that the `.config` file has the following lines:
+```
+CONFIG_KPROBES=y
+CONFIG_HAVE_KPROBES=y
+```
+
+Once the kernel has been built as explained in *(insert link here)*, run the following to build and install the modules. This is required to build out-of-tree kernel modules for the OpenRISC kernel.
+
+```sh
+make -j `nproc` ARCH=openrisc CROSS_COMPILE="or1k-buildroot-linux-gnu-" modules
+make -j `nproc` ARCH=openrisc CROSS_COMPILE="or1k-buildroot-linux-gnu-" modules_install
+```
+
+
