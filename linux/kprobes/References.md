@@ -10,7 +10,9 @@
 - https://people.cs.vt.edu/djwillia/papers/atc24-kprobe.pdf
 - https://programmerall.com/article/11022054190/
 - https://terenceli.github.io/%E6%8A%80%E6%9C%AF/2020/08/05/tracing-basic
-
+- https://developer.arm.com/community/arm-community-blogs/b/architectures-and-processors-blog/posts/caches-and-self-modifying-code
+- https://lpc.events/event/17/contributions/1462/attachments/1211/2475/pt_regs%20-%20the%20good,%20the%20bad%20and%20the%20ugly.pdf
+- https://lwn.net/Articles/574050/
 
 - https://ftp6.gwdg.de/pub/misc/opencores/ml-archive/archives/openrisc/0302/msg00035.html
 - https://lwn.net/Articles/920009/
