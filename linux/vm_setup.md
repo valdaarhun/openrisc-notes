@@ -16,7 +16,7 @@ make -j `nproc` ARCH=openrisc CROSS_COMPILE="or1k-buildroot-linux-gnu-"
 ### Setting up the filesystems
 
 ```sh
-find . -print0 | cpio -H newc -ov --null --owner=root:root | bzip2 > initramfs.cpio.bz2
+find . -print0 | cpio -H newc -ov --null --owner=root:root | bzip2 > ../initramfs.cpio.bz2
 ```
 
 ### Booting
