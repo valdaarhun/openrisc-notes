@@ -42,6 +42,15 @@ make -j `nproc` ARCH=openrisc CROSS_COMPILE="or1k-buildroot-linux-gnu-" modules
 make -j `nproc` ARCH=openrisc CROSS_COMPILE="or1k-buildroot-linux-gnu-" modules_install
 ```
 
+## Building samples
+
+Make sure to add the following in .config:
+- CONFIG_SAMPLES=y
+- CONFIG_SAMPLE_KPROBES=m
+- CONFIG_SAMPLE_KRETPROBES=m
+
+This will build the kprobe and kretprobe sample modules located at `samples/kprobes/` that can be used for testing.
+
 # Kretprobes - implementation
 
 In addition to the config options for KProbes, the following options are required:
@@ -56,15 +65,25 @@ Similar to KProbes, kretprobes has a `struct kretprobe`. This structure has a `s
 
 `struct kretprobe` itself also has two fields for user-defined handlers - `entry_handler` which runs on function entry (because it is invoked by the encapsulated KProbe's pre-handler), and `handler` which is similar to KProbe's post-handler. A non-zero value returned by `entry_handler` implies there's something wrong and that the kretprobe mustn't be processed.
 
-A kretprobe flow looks a little like this:
+## Kretprobe flow simplified:
 
 `kretprobe_register()`
 \_ `kprobe_on_func_entry()` checks if addr is at function entry
 \_ compare addr with blacklisted functions
-\_ set KProbe pre-handler to `pre_handler_kretprobe()`
-\_ allocate `struct rethook` and set rethook callback function to `kretprobe_rethook_handler()`
-\_ with this set up, register encapsulated KProbe at entry of the function.
+\_ set KProbe pre-handler to `pre_handler_kretprobe` (arch-agnostic, not configurable). The post-handler is NULL.
+\_ allocate `struct rethook` and set rethook callback function to `kretprobe_rethook_handler`
+\_ register encapsulated KProbe at entry of the function.
 
-On entering the function, the KProbe is triggered and `pre_handler_kretprobe()` is run. If the kretprobe has an `entry_handler()` associated with it, it executes the handler. It then hooks the function return to `arch_rethook_trampoline()`. The original return address is saved in `struct rethook_node`.
+On entering the function
+\_ the KProbe is triggered
+\_`pre_handler_kretprobe()` is executed
+    \_ the `entry_handler()` is executed if one is associated with the kretprobe
+    \_ if all goes well till this point, the pre-handler then invokes `rethook_hook()` to hook the function's return
+        \_ the original return address is saved in `struct rethook_node`.
+        \_ the return address is pointed to `arch_rethook_trampoline()`.
+\_ the KProbe finishes executing
 
-On function return, control is transferred to the trampoline. This callback in turn invokes `rethook_trampoline_handler()`. This handler restores the original return address and fixes pt_regs if needed. It then calls `kretprobe_rethook_handler()` which calls the user-defined kretprobe `handler`. Once this is done, the 
+On function return, control is transferred to the trampoline instead of the original caller. The trampoline stores the register set and the trampoline callback is triggered. This callback in turn invokes `rethook_trampoline_handler()`. This restores the original return address and fixes pt_regs if needed. It then calls `kretprobe_rethook_handler()` which calls the user-defined kretprobe `handler`. Once this is done, control is returned to the original caller.
+
+Q. Kprobe at beginning of trampoline?
+Q. When is kretprobe handler called?
